@@ -5,6 +5,7 @@ require 'thread'
 require 'prometheus/client/counter'
 require 'prometheus/client/summary'
 require 'prometheus/client/gauge'
+require 'prometheus/client/max_gauge'
 require 'prometheus/client/histogram'
 
 module Prometheus
@@ -59,6 +60,14 @@ module Prometheus
                            labels: labels,
                            preset_labels: preset_labels,
                            store_settings: store_settings))
+      end
+
+      def max_gauge(name, docstring:, labels: [], preset_labels: {}, store_settings: {})
+        register(MaxGauge.new(name,
+                              docstring: docstring,
+                              labels: labels,
+                              preset_labels: preset_labels,
+                              store_settings: store_settings))
       end
 
       def histogram(name, docstring:, labels: [], preset_labels: {},
