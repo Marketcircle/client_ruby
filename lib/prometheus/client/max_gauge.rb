@@ -61,7 +61,6 @@ module Prometheus
         attr_reader :ttl
 
         def initialize(store, ttl)
-          @cleanup_q = Queue.new
           @lock = Mutex.new
           @store = store
           @ttl = ttl
@@ -69,20 +68,19 @@ module Prometheus
           @trailing_history = []
           @current_max = 0
 
-          start_worker_thread
-          append Snapshot.new(0, {}, current_time)
+          append(Snapshot.new(0, {}, current_time))
         end
 
         def set(value, labels)
           @lock.synchronize do
-            append Snapshot.new(value, labels, current_time)
+            append(Snapshot.new(value, labels, current_time))
           end
         end
 
         def increment(value, labels)
           @lock.synchronize do
             new_value = @trailing_history.last.value + value
-            append Snapshot.new(new_value, labels, current_time)
+            append(Snapshot.new(new_value, labels, current_time))
           end
         end
 
@@ -102,23 +100,23 @@ module Prometheus
           end
 
           @trailing_history << snapshot
-          @cleanup_q << snapshot
+          expire_old_snapshots(snapshot.timestamp)
         end
 
-        # @note You may only remove a snapshot if it is the oldest snapshot
-        def remove(snapshot)
-          oldest_snapshot = @trailing_history.shift
+        # Wait for the oldest snapshot to expire, and then clean it up
+        # and update relevant state.
+        def expire_old_snapshots(now)
+          new_trailing_history =
+            @trailing_history.drop_while do |snapshot|
+              snapshot_age = now - snapshot.timestamp
+              remaining_ttl = @ttl - snapshot_age
+              remaining_ttl.negative?
+            end
 
-          # assert
-          raise 'data inconsistency' unless snapshot.eql?(oldest_snapshot)
+          # do not recalculate max if we do not have to
+          return if new_trailing_history.length == @trailing_history.length
 
-          # we need to keep at least one value in the history in order
-          # for this system to work; this helps if we go through a quiet
-          # period (longer than ttl)
-          if @trailing_history.empty?
-            oldest_snapshot.timestamp = current_time
-            append oldest_snapshot
-          end
+          @trailing_history = new_trailing_history
 
           max_snapshot = @trailing_history.max { |lhs, rhs|
             lhs.value <=> rhs.value
@@ -126,30 +124,6 @@ module Prometheus
 
           @current_max = max_snapshot.value
           @store.set(labels: max_snapshot.labels, val: @current_max)
-        end
-
-        # Wait for the oldest snapshot to expire, and then clean it up
-        # and update relevant state.
-        def expire_next_snapshot
-          snapshot = @cleanup_q.deq
-
-          snapshot_age = current_time - snapshot.timestamp
-          remaining_ttl = @ttl - snapshot_age
-          if remaining_ttl.positive?
-            sleep(remaining_ttl)
-          end
-
-          @lock.synchronize do
-            remove(snapshot)
-          end
-        end
-
-        def start_worker_thread
-          Thread.new do
-            loop do
-              expire_next_snapshot
-            end
-          end
         end
 
       end
